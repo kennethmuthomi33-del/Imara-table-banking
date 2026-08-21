@@ -1,0 +1,1580 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Home, PiggyBank, Landmark, Users, User, Bell, ArrowLeft, Plus, Check, X,
+  Clock, TrendingUp, Wallet, Receipt, ShieldCheck, LogOut, ChevronRight,
+  CircleCheck, CircleAlert, Filter, KeyRound, Phone, Mail, Calendar,
+  ArrowUpRight, ArrowDownRight, Eye, EyeOff, UserPlus, ClipboardCheck,
+  BadgeCheck, CircleDollarSign, Building2, Search, Lock
+} from 'lucide-react';
+
+const STORAGE_KEY = 'imara-db-v2';
+const SESSION_KEY = 'imara-session-v2';
+
+/* ================= utils ================= */
+const uid = (p = 'id') => `${p}_${Math.random().toString(36).slice(2, 9)}`;
+const refNo = (prefix) => `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+const fmtKSh = (n) => `KSh ${Math.round(n || 0).toLocaleString('en-KE')}`;
+const fmtDate = (d) => new Date(d).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' });
+const fmtDateShort = (d) => new Date(d).toLocaleDateString('en-KE', { day: 'numeric', month: 'short' });
+const daysBetween = (a, b) => Math.floor((new Date(b) - new Date(a)) / 86400000);
+const addMonths = (iso, m) => { const nd = new Date(iso); nd.setMonth(nd.getMonth() + m); return nd.toISOString(); };
+const todayISO = () => new Date().toISOString();
+const initials = (name) => name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+
+/* ================= seed data ================= */
+function seedDB() {
+  const now = new Date();
+  const daysAgo = (n) => new Date(now.getTime() - n * 86400000).toISOString();
+  const groupId = 'grp_kig01';
+  const superId = 'usr_super01', adminId = 'usr_admin01', kennethId = 'usr_kenneth', graceId = 'usr_grace', peterId = 'usr_peter';
+
+  const users = [
+    { id: superId, full_name: 'System Administrator', phone: '+254712345000', email: '', pin: '1234', role: 'super_admin', group_id: groupId, status: 'Active', joined_at: daysAgo(400), member_no: 'IMR-0001' },
+    { id: adminId, full_name: 'Faith Wanjiru', phone: '+254712345001', email: 'faith@kig.co.ke', pin: '1234', role: 'admin', group_id: groupId, status: 'Active', joined_at: daysAgo(200), member_no: 'IMR-0002' },
+    { id: kennethId, full_name: 'Kenneth Otieno', phone: '+254712345002', email: '', pin: '1234', role: 'member', group_id: groupId, status: 'Active', joined_at: daysAgo(120), member_no: 'IMR-0003' },
+    { id: graceId, full_name: 'Grace Achieng', phone: '+254712345003', email: '', pin: '1234', role: 'member', group_id: groupId, status: 'Active', joined_at: daysAgo(60), member_no: 'IMR-0004' },
+    { id: peterId, full_name: 'Peter Mwangi', phone: '+254712345004', email: '', pin: '1234', role: 'member', group_id: groupId, status: 'Active', joined_at: daysAgo(10), member_no: 'IMR-0005' },
+  ];
+
+  const groups = [
+    { id: groupId, name: 'KEN INTERNATIONAL GROUPS', organization: 'KEN INTERNATIONAL GROUPS', invite_code: 'KIG-2026', weekly_contribution: 500, social_fund_balance: 14500, created_at: daysAgo(400), status: 'Active' },
+  ];
+
+  const sv = (member_id, amount, days, status = 'Verified', note = '') =>
+    ({ id: uid('sav'), member_id, group_id: groupId, amount, date: daysAgo(days), reference: refNo('SAV'), status, note });
+
+  const savings = [
+    sv(kennethId, 5000, 110), sv(kennethId, 4000, 90), sv(kennethId, 4500, 70),
+    sv(kennethId, 3500, 50), sv(kennethId, 4000, 30), sv(kennethId, 4000, 9),
+    sv(kennethId, 500, 2, 'Pending', "This week's saving"),
+    sv(graceId, 3000, 58), sv(graceId, 3000, 40), sv(graceId, 3500, 20), sv(graceId, 2500, 5),
+    sv(peterId, 500, 3),
+  ];
+
+  const loanId = 'loan_kenneth01';
+  const loans = [
+    { id: loanId, member_id: kennethId, group_id: groupId, requested_amount: 20000, approved_amount: 20000, loan_limit_at_application: 20000, status: 'Active', purpose: 'Restocking my shop', repayment_period: 6, approved_by: adminId, approved_at: daysAgo(45), due_date: addMonths(daysAgo(45), 6), created_at: daysAgo(48) },
+  ];
+
+  const repayments = [
+    { id: uid('rep'), loan_id: loanId, member_id: kennethId, amount: 5000, date: daysAgo(30), reference: refNo('REP'), status: 'Verified' },
+    { id: uid('rep'), loan_id: loanId, member_id: kennethId, amount: 3000, date: daysAgo(10), reference: refNo('REP'), status: 'Verified' },
+  ];
+
+  const notifications = [
+    { id: uid('ntf'), user_id: kennethId, title: 'Loan approved', message: 'Your loan of KSh 20,000 was approved by Faith Wanjiru.', type: 'loan_approved', read: true, created_at: daysAgo(45) },
+    { id: uid('ntf'), user_id: kennethId, title: 'Repayment verified', message: 'Your repayment of KSh 3,000 was verified.', type: 'repayment', read: false, created_at: daysAgo(10) },
+    { id: uid('ntf'), user_id: adminId, title: 'Contribution pending', message: 'Kenneth Otieno submitted a contribution awaiting verification.', type: 'savings_pending', read: false, created_at: daysAgo(2) },
+  ];
+
+  return { users, groups, savings, loans, repayments, notifications };
+}
+
+/* ================= business logic ================= */
+const eligibleSavings = (db, memberId) =>
+  db.savings.filter(s => s.member_id === memberId && s.status === 'Verified').reduce((s, x) => s + x.amount, 0);
+
+const isEligible = (db, member) => {
+  const total = eligibleSavings(db, member.id);
+  return total > 0 && daysBetween(member.joined_at, todayISO()) >= 30;
+};
+
+const eligibilityReason = (db, member) => {
+  const days = daysBetween(member.joined_at, todayISO());
+  if (days < 30) return `You need at least one month of savings history before applying. ${30 - days} day${30 - days === 1 ? '' : 's'} to go.`;
+  if (eligibleSavings(db, member.id) <= 0) return 'You need a verified savings contribution before applying.';
+  return '';
+};
+
+const loanLimitFor = (db, member) => Math.floor(eligibleSavings(db, member.id) * 0.8);
+const activeLoanFor = (db, memberId) => db.loans.find(l => l.member_id === memberId && ['Pending', 'Approved', 'Active'].includes(l.status)) || null;
+const loanRepaid = (db, loanId) => db.repayments.filter(r => r.loan_id === loanId && r.status === 'Verified').reduce((s, r) => s + r.amount, 0);
+const loanOutstanding = (db, loan) => Math.max(0, (loan.approved_amount || 0) - loanRepaid(db, loan.id));
+const groupSavingsTotal = (db, groupId) => db.savings.filter(s => s.group_id === groupId && s.status === 'Verified').reduce((s, x) => s + x.amount, 0);
+const groupMembers = (db, groupId) => db.users.filter(u => u.group_id === groupId);
+
+function weekRange(d = new Date()) {
+  const day = d.getDay();
+  const diffToMonday = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(d); monday.setDate(d.getDate() + diffToMonday); monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
+  return [monday, sunday];
+}
+function weeklyStatus(db, member, group) {
+  const [mon, sun] = weekRange();
+  const entries = db.savings.filter(s => s.member_id === member.id && new Date(s.date) >= mon && new Date(s.date) <= sun);
+  const total = entries.reduce((s, x) => s + x.amount, 0);
+  if (total >= group.weekly_contribution) return { status: 'Completed', total };
+  if (entries.length > 0) return { status: 'Pending', total };
+  return { status: 'Pending', total: 0 };
+}
+
+function deriveTransactions(db, { memberId = null, groupId = null } = {}) {
+  const list = [];
+  db.savings.forEach(s => {
+    if (memberId && s.member_id !== memberId) return;
+    if (groupId && s.group_id !== groupId) return;
+    list.push({ id: s.id, date: s.date, type: 'Savings', amount: s.amount, status: s.status, reference: s.reference, description: 'Weekly savings contribution', member_id: s.member_id, direction: 'in' });
+  });
+  db.loans.forEach(l => {
+    if (memberId && l.member_id !== memberId) return;
+    if (groupId && l.group_id !== groupId) return;
+    if (l.status === 'Pending') {
+      list.push({ id: l.id + '_app', date: l.created_at, type: 'Loan', amount: l.requested_amount, status: 'Pending', reference: `LN-${l.id.slice(-6).toUpperCase()}`, description: 'Loan application submitted', member_id: l.member_id, direction: 'out' });
+    } else if (l.status === 'Rejected') {
+      list.push({ id: l.id + '_rej', date: l.created_at, type: 'Loan', amount: l.requested_amount, status: 'Rejected', reference: `LN-${l.id.slice(-6).toUpperCase()}`, description: 'Loan application rejected', member_id: l.member_id, direction: 'out' });
+    } else {
+      list.push({ id: l.id + '_dis', date: l.approved_at || l.created_at, type: 'Loan', amount: l.approved_amount, status: l.status === 'Fully Repaid' ? 'Completed' : 'Disbursed', reference: `LN-${l.id.slice(-6).toUpperCase()}`, description: `Loan disbursement — ${l.purpose}`, member_id: l.member_id, direction: 'out' });
+    }
+  });
+  db.repayments.forEach(r => {
+    if (memberId && r.member_id !== memberId) return;
+    const loan = db.loans.find(l => l.id === r.loan_id);
+    if (groupId && loan && loan.group_id !== groupId) return;
+    list.push({ id: r.id, date: r.date, type: 'Repayment', amount: r.amount, status: r.status, reference: r.reference, description: 'Loan repayment', member_id: r.member_id, direction: 'in' });
+  });
+  return list.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+function pushNotification(db, user_id, title, message, type) {
+  db.notifications.unshift({ id: uid('ntf'), user_id, title, message, type, read: false, created_at: todayISO() });
+}
+
+/* ================= small UI pieces ================= */
+function StatusBadge({ status }) {
+  const map = {
+    Verified: 'chip-forest', Completed: 'chip-forest', Approved: 'chip-forest', Active: 'chip-forest',
+    'Fully Repaid': 'chip-forest-solid', Pending: 'chip-gold', Disbursed: 'chip-gold',
+    Rejected: 'chip-brick', Missed: 'chip-brick', Overdue: 'chip-brick', Cancelled: 'chip-neutral',
+  };
+  return <span className={`badge ${map[status] || 'chip-neutral'}`}>{status}</span>;
+}
+
+function RingProgress({ percent, size = 84, stroke = 9, color = 'var(--forest)', segments = 16, children }) {
+  const p = Math.max(0, Math.min(100, percent));
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = c / segments;
+  const gap = dash * 0.3;
+  return (
+    <div style={{ position: 'relative', width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--line)" strokeWidth={stroke} strokeDasharray={`${dash - gap} ${gap}`} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c - (c * p) / 100} style={{ transition: 'stroke-dashoffset 900ms cubic-bezier(.22,1,.36,1)' }} />
+      </svg>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{children}</div>
+    </div>
+  );
+}
+
+function Card({ children, className = '', style = {} }) {
+  return <div className={`card-shadow bg-card rounded-2xl p-4 ${className}`} style={style}>{children}</div>;
+}
+
+function IconTile({ icon: Icon, tone = 'forest' }) {
+  return (
+    <div className={`icon-tile icon-tile-${tone}`}>
+      <Icon size={18} />
+    </div>
+  );
+}
+
+function PrimaryButton({ children, onClick, disabled, type = 'button', full = true }) {
+  return (
+    <button type={type} onClick={onClick} disabled={disabled}
+      className={`tap font-body font-semibold text-sm rounded-xl py-3 px-4 ${full ? 'w-full' : ''}`}
+      style={{ background: disabled ? 'var(--line)' : 'var(--forest)', color: disabled ? 'var(--ink-soft)' : '#fff', border: 'none' }}>
+      {children}
+    </button>
+  );
+}
+function GhostButton({ children, onClick, full = false }) {
+  return (
+    <button onClick={onClick} className={`tap font-body font-semibold text-sm rounded-xl py-3 px-4 border border-line bg-card text-ink ${full ? 'w-full' : ''}`}>
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block mb-3">
+      <span className="block text-xs font-semibold text-ink-soft mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+const inputCls = "w-full rounded-xl border border-line bg-paper px-3 py-2.5 text-sm text-ink font-body outline-none";
+
+function Sheet({ title, onClose, children }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(18,30,23,0.55)' }} className="flex items-end justify-center">
+      <div className="sheet-enter bg-card w-full rounded-t-3xl p-5" style={{ maxWidth: 420, maxHeight: '86vh', overflowY: 'auto' }}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display text-lg text-ink">{title}</h3>
+          <button onClick={onClose} className="tap p-1.5 rounded-full bg-paper"><X size={18} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ icon: Icon, title, note }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-10 px-6">
+      <div className="icon-tile icon-tile-neutral mb-3"><Icon size={20} /></div>
+      <div className="font-semibold text-sm text-ink">{title}</div>
+      {note && <div className="text-xs text-ink-soft mt-1">{note}</div>}
+    </div>
+  );
+}
+
+/* ================= nav ================= */
+const MEMBER_NAV = [
+  { key: 'dashboard', label: 'Home', icon: Home },
+  { key: 'savings', label: 'Savings', icon: PiggyBank },
+  { key: 'loan', label: 'Loan', icon: Landmark },
+  { key: 'group', label: 'Group', icon: Users },
+  { key: 'profile', label: 'Profile', icon: User },
+];
+const ADMIN_NAV = [
+  { key: 'dashboard', label: 'Home', icon: Home },
+  { key: 'group', label: 'Group', icon: Users },
+  { key: 'loan', label: 'Loans', icon: Landmark },
+  { key: 'transactions', label: 'Activity', icon: Receipt },
+  { key: 'profile', label: 'Profile', icon: User },
+];
+
+function BottomNav({ items, active, onNav }) {
+  return (
+    <div className="fixed left-0 right-0 bottom-0 z-30 flex justify-center">
+      <div className="bg-card border-line w-full flex" style={{ maxWidth: 420, borderTop: '1px solid var(--line)', paddingBottom: 'env(safe-area-inset-bottom, 8px)' }}>
+        {items.map(it => {
+          const Icon = it.icon; const isActive = active === it.key;
+          return (
+            <button key={it.key} onClick={() => onNav(it.key)} className="tap flex-1 flex flex-col items-center gap-1 py-2.5">
+              <Icon size={20} color={isActive ? 'var(--forest)' : 'var(--ink-soft)'} strokeWidth={isActive ? 2.4 : 2} />
+              <span className="text-xs font-semibold" style={{ color: isActive ? 'var(--forest)' : 'var(--ink-soft)' }}>{it.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BackTopBar({ title, onBack, right }) {
+  return (
+    <div className="flex items-center justify-between px-5 pt-6 pb-4 sticky top-0 bg-paper z-10">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="tap p-1.5 rounded-full bg-card border border-line"><ArrowLeft size={18} /></button>
+        <h2 className="font-display text-lg text-ink">{title}</h2>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+/* ================= App ================= */
+export default function IMARAApp() {
+  const [db, setDb] = useState(null);
+  const [session, setSession] = useState(null);
+  const [route, setRoute] = useState('splash');
+  const [routeParams, setRouteParams] = useState({});
+  const [groupTab, setGroupTab] = useState('members');
+  const [txFilter, setTxFilter] = useState('All');
+  const [modal, setModal] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
+  const [authError, setAuthError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      let dbData = null, sess = null;
+      try {
+        const r = await window.storage.get(STORAGE_KEY, false);
+        if (r) dbData = JSON.parse(r.value);
+      } catch (e) { /* not found */ }
+      if (!dbData) {
+        dbData = seedDB();
+        try { await window.storage.set(STORAGE_KEY, JSON.stringify(dbData), false); } catch (e) {}
+      }
+      try {
+        const r = await window.storage.get(SESSION_KEY, false);
+        if (r) sess = JSON.parse(r.value);
+      } catch (e) {}
+      if (!mounted) return;
+      setDb(dbData);
+      if (sess && dbData.users.find(u => u.id === sess.userId)) {
+        setSession(sess); setRoute('dashboard');
+      } else setRoute('splash');
+      setLoading(false);
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const persist = useCallback((next) => { window.storage.set(STORAGE_KEY, JSON.stringify(next), false).catch(() => {}); }, []);
+  const updateDb = useCallback((updater) => {
+    setDb(prev => {
+      const draft = JSON.parse(JSON.stringify(prev));
+      const next = updater(draft) || draft;
+      persist(next);
+      return next;
+    });
+  }, [persist]);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
+
+  const doLogin = (phone, pin) => {
+    const user = db.users.find(u => u.phone === phone.trim() && u.pin === pin.trim());
+    if (!user) { setAuthError('Phone number or PIN is incorrect.'); return; }
+    const sess = { userId: user.id };
+    setSession(sess);
+    window.storage.set(SESSION_KEY, JSON.stringify(sess), false).catch(() => {});
+    setAuthError(''); setRoute('dashboard');
+  };
+  const doRegister = ({ full_name, phone, email, pin, invite_code }) => {
+    if (!full_name || !phone || !pin) { setAuthError('Please fill in your name, phone and PIN.'); return; }
+    const group = db.groups.find(g => g.invite_code === invite_code.trim());
+    if (!group) { setAuthError('Invitation code not recognised.'); return; }
+    if (db.users.find(u => u.phone === phone.trim())) { setAuthError('That phone number is already registered.'); return; }
+    const newUser = { id: uid('usr'), full_name: full_name.trim(), phone: phone.trim(), email: email.trim(), pin: pin.trim(), role: 'member', group_id: group.id, status: 'Active', joined_at: todayISO(), member_no: `IMR-${String(db.users.length + 1).padStart(4, '0')}` };
+    updateDb(d => { d.users.push(newUser); return d; });
+    const sess = { userId: newUser.id };
+    setSession(sess);
+    window.storage.set(SESSION_KEY, JSON.stringify(sess), false).catch(() => {});
+    setAuthError(''); setRoute('dashboard');
+  };
+  const quickLogin = (userId) => {
+    const sess = { userId };
+    setSession(sess);
+    window.storage.set(SESSION_KEY, JSON.stringify(sess), false).catch(() => {});
+    setRoute('dashboard');
+  };
+  const doLogout = () => {
+    setSession(null);
+    window.storage.set(SESSION_KEY, JSON.stringify(null), false).catch(() => {});
+    setRoute('splash'); setAuthMode('login');
+  };
+
+  if (loading || !db) {
+    return (
+      <div className="min-h-screen bg-paper flex items-center justify-center font-body">
+        <BrandStyles />
+        <div className="text-center">
+          <div className="font-display text-2xl text-forest">IMARA</div>
+          <div className="text-xs text-ink-soft mt-1">Loading your group…</div>
+        </div>
+      </div>
+    );
+  }
+
+  const user = session ? db.users.find(u => u.id === session.userId) : null;
+
+  if (!user) {
+    return (
+      <div className="w-full flex justify-center bg-paper min-h-screen">
+        <BrandStyles />
+        <div className="w-full" style={{ maxWidth: 420 }}>
+          {route === 'splash' && <SplashScreen onLogin={() => { setAuthMode('login'); setRoute('auth'); }} onRegister={() => { setAuthMode('register'); setRoute('auth'); }} />}
+          {route === 'auth' && (
+            <AuthScreen
+              mode={authMode} setMode={setAuthMode} error={authError}
+              onLogin={doLogin} onRegister={doRegister}
+              onBack={() => { setAuthError(''); setRoute('splash'); }}
+              onQuickLogin={quickLogin}
+              db={db}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const group = db.groups.find(g => g.id === user.group_id);
+  const isAdmin = user.role === 'admin' || user.role === 'super_admin';
+  const navItems = isAdmin ? ADMIN_NAV : MEMBER_NAV;
+  const unread = db.notifications.filter(n => n.user_id === user.id && !n.read).length;
+
+  const nav = (key) => { setRoute(key); if (key === 'group') setGroupTab('members'); };
+
+  const openLoanDetail = (loanId) => { setModal(null); setRouteParams({ loanId }); setRoute('loanDetail'); };
+
+  /* ---- actions ---- */
+  const addSavings = ({ amount, date, note }) => {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { showToast("Enter a valid amount."); return; }
+    updateDb(d => {
+      const rec = { id: uid('sav'), member_id: user.id, group_id: user.group_id, amount: amt, date: date || todayISO(), reference: refNo('SAV'), status: 'Pending', note: note || '' };
+      d.savings.push(rec);
+      const admins = d.users.filter(u => u.group_id === user.group_id && (u.role === 'admin' || u.role === 'super_admin'));
+      admins.forEach(a => pushNotification(d, a.id, 'Contribution pending', `${user.full_name} submitted ${fmtKSh(amt)} awaiting verification.`, 'savings_pending'));
+      return d;
+    });
+    setModal(null); showToast('Savings submitted for verification.');
+  };
+
+  const applyLoan = ({ requested_amount, purpose, repayment_period, note }) => {
+    const amt = Number(requested_amount);
+    const limit = loanLimitFor(db, user);
+    if (!isEligible(db, user)) { showToast('You are not yet eligible for a loan.'); return; }
+    if (activeLoanFor(db, user.id)) { showToast('You already have an active or pending loan.'); return; }
+    if (!amt || amt <= 0) { showToast('Enter a valid amount.'); return; }
+    if (amt > limit) { showToast(`You can request up to ${fmtKSh(limit)}.`); return; }
+    if (!purpose) { showToast('Tell us the purpose of the loan.'); return; }
+    updateDb(d => {
+      const loan = { id: uid('loan'), member_id: user.id, group_id: user.group_id, requested_amount: amt, approved_amount: 0, loan_limit_at_application: limit, status: 'Pending', purpose, repayment_period: Number(repayment_period) || 3, approved_by: null, approved_at: null, due_date: null, created_at: todayISO() };
+      d.loans.push(loan);
+      const admins = d.users.filter(u => u.group_id === user.group_id && (u.role === 'admin' || u.role === 'super_admin'));
+      admins.forEach(a => pushNotification(d, a.id, 'Loan application received', `${user.full_name} applied for ${fmtKSh(amt)}.`, 'loan_pending'));
+      return d;
+    });
+    setModal(null); showToast('Loan application submitted.'); setRoute('loan');
+  };
+
+  const recordRepayment = ({ loan_id, amount, date, note }) => {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { showToast('Enter a valid amount.'); return; }
+    updateDb(d => {
+      const loan = d.loans.find(l => l.id === loan_id);
+      const outstanding = loanOutstanding(d, loan);
+      const capped = Math.min(amt, outstanding);
+      d.repayments.push({ id: uid('rep'), loan_id, member_id: user.id, amount: capped, date: date || todayISO(), reference: refNo('REP'), status: 'Pending', note: note || '' });
+      const admins = d.users.filter(u => u.group_id === user.group_id && (u.role === 'admin' || u.role === 'super_admin'));
+      admins.forEach(a => pushNotification(d, a.id, 'Repayment pending', `${user.full_name} recorded a repayment of ${fmtKSh(capped)}.`, 'repayment_pending'));
+      return d;
+    });
+    setModal(null); showToast('Repayment submitted for verification.');
+  };
+
+  const verifyItem = (kind, id) => {
+    updateDb(d => {
+      if (kind === 'savings') {
+        const s = d.savings.find(x => x.id === id); s.status = 'Verified';
+        pushNotification(d, s.member_id, 'Contribution verified', `Your saving of ${fmtKSh(s.amount)} was verified.`, 'savings_verified');
+      } else if (kind === 'repayment') {
+        const r = d.repayments.find(x => x.id === id); r.status = 'Verified';
+        const loan = d.loans.find(l => l.id === r.loan_id);
+        pushNotification(d, r.member_id, 'Repayment verified', `Your repayment of ${fmtKSh(r.amount)} was verified.`, 'repayment_verified');
+        if (loanOutstanding(d, loan) <= 0) {
+          loan.status = 'Fully Repaid';
+          pushNotification(d, loan.member_id, 'Loan fully repaid', 'Congratulations — your loan balance is now zero.', 'loan_repaid');
+        }
+      }
+      return d;
+    });
+    showToast('Verified.');
+  };
+  const rejectItem = (kind, id) => {
+    updateDb(d => {
+      if (kind === 'savings') { const s = d.savings.find(x => x.id === id); s.status = 'Rejected'; pushNotification(d, s.member_id, 'Contribution rejected', `Your submitted saving of ${fmtKSh(s.amount)} was rejected. Please check the reference and resubmit.`, 'savings_rejected'); }
+      if (kind === 'repayment') { const r = d.repayments.find(x => x.id === id); r.status = 'Rejected'; pushNotification(d, r.member_id, 'Repayment rejected', `Your repayment of ${fmtKSh(r.amount)} was rejected. Please check the reference and resubmit.`, 'repayment_rejected'); }
+      return d;
+    });
+    showToast('Rejected.');
+  };
+
+  const approveLoan = (loanId, approvedAmount) => {
+    updateDb(d => {
+      const loan = d.loans.find(l => l.id === loanId);
+      const amt = Math.min(Number(approvedAmount) || loan.requested_amount, loan.loan_limit_at_application);
+      loan.status = 'Active'; loan.approved_amount = amt; loan.approved_by = user.id; loan.approved_at = todayISO();
+      loan.due_date = addMonths(todayISO(), loan.repayment_period);
+      pushNotification(d, loan.member_id, 'Loan approved', `Your loan of ${fmtKSh(amt)} has been approved.`, 'loan_approved');
+      return d;
+    });
+    showToast('Loan approved.');
+  };
+  const rejectLoan = (loanId) => {
+    updateDb(d => {
+      const loan = d.loans.find(l => l.id === loanId);
+      loan.status = 'Rejected';
+      pushNotification(d, loan.member_id, 'Loan rejected', `Your loan application for ${fmtKSh(loan.requested_amount)} was not approved this time.`, 'loan_rejected');
+      return d;
+    });
+    showToast('Loan rejected.');
+  };
+
+  const addMember = ({ full_name, phone, pin }) => {
+    if (!full_name || !phone || !pin) { showToast('Fill in all fields.'); return; }
+    if (db.users.find(u => u.phone === phone.trim())) { showToast('That phone number is already registered.'); return; }
+    updateDb(d => {
+      d.users.push({ id: uid('usr'), full_name: full_name.trim(), phone: phone.trim(), email: '', pin: pin.trim(), role: 'member', group_id: user.group_id, status: 'Active', joined_at: todayISO(), member_no: `IMR-${String(d.users.length + 1).padStart(4, '0')}` });
+      return d;
+    });
+    setModal(null); showToast('Member added.');
+  };
+
+  const changePin = (newPin) => {
+    if (!newPin || newPin.length < 4) { showToast('PIN must be at least 4 digits.'); return; }
+    updateDb(d => { d.users.find(u => u.id === user.id).pin = newPin; return d; });
+    setModal(null); showToast('PIN updated.');
+  };
+
+  const markAllRead = () => { updateDb(d => { d.notifications.forEach(n => { if (n.user_id === user.id) n.read = true; }); return d; }); };
+  const markRead = (id) => { updateDb(d => { const n = d.notifications.find(x => x.id === id); if (n) n.read = true; return d; }); };
+
+  /* ---- screen render ---- */
+  let screen = null;
+  if (route === 'dashboard') {
+    screen = isAdmin
+      ? <AdminDashboard db={db} user={user} group={group} nav={nav} setModal={setModal} setRoute={setRoute} setGroupTab={setGroupTab} />
+      : <MemberDashboard db={db} user={user} group={group} unread={unread} setRoute={setRoute} setModal={setModal} openLoanDetail={openLoanDetail} />;
+  } else if (route === 'savings') {
+    screen = <SavingsScreen db={db} user={user} group={group} onBack={() => nav('dashboard')} setModal={setModal} />;
+  } else if (route === 'loan') {
+    screen = isAdmin
+      ? <AdminLoansScreen db={db} onBack={() => nav('dashboard')} onApprove={approveLoan} onReject={rejectLoan} openLoanDetail={openLoanDetail} />
+      : <LoanScreen db={db} user={user} onBack={() => nav('dashboard')} setModal={setModal} openLoanDetail={openLoanDetail} />;
+  } else if (route === 'loanDetail') {
+    const loan = db.loans.find(l => l.id === routeParams.loanId);
+    screen = loan
+      ? <LoanDetailScreen db={db} loan={loan} user={user} onBack={() => setRoute('loan')} setModal={setModal} />
+      : <EmptyState icon={Landmark} title="Loan not found" />;
+  } else if (route === 'group') {
+    screen = <GroupScreen db={db} user={user} group={group} isAdmin={isAdmin} tab={groupTab} setTab={setGroupTab} onBack={() => nav('dashboard')}
+      setModal={setModal} onVerify={verifyItem} onReject={rejectItem} onApprove={approveLoan} onRejectLoan={rejectLoan} openLoanDetail={openLoanDetail} />;
+  } else if (route === 'transactions') {
+    screen = <TransactionsScreen db={db} user={user} isAdmin={isAdmin} onBack={() => nav('dashboard')} filter={txFilter} setFilter={setTxFilter} />;
+  } else if (route === 'profile') {
+    screen = <ProfileScreen db={db} user={user} group={group} onBack={() => nav('dashboard')} setModal={setModal} onLogout={doLogout} />;
+  } else if (route === 'notifications') {
+    screen = <NotificationsScreen db={db} user={user} onBack={() => nav('dashboard')} onMarkAllRead={markAllRead} onMarkRead={markRead} />;
+  }
+
+  return (
+    <div className="w-full flex justify-center bg-paper" style={{ minHeight: '100vh' }}>
+      <BrandStyles />
+      <div className="w-full relative fade-in" style={{ maxWidth: 420, minHeight: '100vh', paddingBottom: 76 }}>
+        {screen}
+        <BottomNav items={navItems} active={route === 'loanDetail' ? 'loan' : route} onNav={nav} />
+        {toast && (
+          <div style={{ position: 'fixed', bottom: 88, left: '50%', transform: 'translateX(-50%)', zIndex: 60 }} className="bg-forest-deep text-paper text-sm font-semibold px-4 py-2.5 rounded-full sheet-enter">
+            {toast}
+          </div>
+        )}
+        {modal && modal.type === 'addSavings' && <AddSavingsSheet group={group} onClose={() => setModal(null)} onSubmit={addSavings} />}
+        {modal && modal.type === 'applyLoan' && <ApplyLoanSheet db={db} user={user} onClose={() => setModal(null)} onSubmit={applyLoan} />}
+        {modal && modal.type === 'repay' && <RepaySheet db={db} loan={modal.loan} onClose={() => setModal(null)} onSubmit={recordRepayment} />}
+        {modal && modal.type === 'addMember' && <AddMemberSheet group={group} onClose={() => setModal(null)} onSubmit={addMember} />}
+        {modal && modal.type === 'changePin' && <ChangePinSheet onClose={() => setModal(null)} onSubmit={changePin} />}
+      </div>
+    </div>
+  );
+}
+
+/* ================= Splash / Auth ================= */
+function SplashScreen({ onLogin, onRegister }) {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <div className="weave-band flex-1 flex flex-col items-center justify-center px-8 text-center" style={{ minHeight: '62vh' }}>
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5" style={{ background: 'rgba(255,255,255,0.14)' }}>
+          <PiggyBank size={30} color="var(--gold)" />
+        </div>
+        <div className="font-display text-4xl text-paper tracking-tight">IMARA</div>
+        <div className="font-mono text-xs uppercase tracking-widest text-paper mt-2" style={{ opacity: 0.75 }}>Ken International Groups</div>
+        <div className="font-display text-lg text-paper mt-6 italic" style={{ opacity: 0.92 }}>"Save Together. Grow Together."</div>
+      </div>
+      <div className="px-6 py-8 flex flex-col gap-3">
+        <PrimaryButton onClick={onLogin}>Log In</PrimaryButton>
+        <GhostButton full onClick={onRegister}>Create an Account</GhostButton>
+        <div className="text-center text-xs text-ink-soft mt-2">A digital table-banking companion for your chama.</div>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ mode, setMode, error, onLogin, onRegister, onBack, onQuickLogin, db }) {
+  const [phone, setPhone] = useState('');
+  const [pin, setPin] = useState('');
+  const [showPin, setShowPin] = useState(false);
+  const [full_name, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [invite_code, setInvite] = useState('');
+
+  const demoAdmin = db.users.find(u => u.role === 'admin');
+  const demoMember = db.users.find(u => u.id === 'usr_kenneth');
+
+  return (
+    <div className="min-h-screen flex flex-col px-6 pt-6">
+      <button onClick={onBack} className="tap p-1.5 rounded-full bg-card border border-line w-9 mb-6"><ArrowLeft size={18} /></button>
+      <div className="font-display text-2xl text-ink mb-1">{mode === 'login' ? 'Welcome back' : 'Join your group'}</div>
+      <div className="text-sm text-ink-soft mb-6">{mode === 'login' ? 'Log in with your phone number and PIN.' : 'Register with the invitation code from your group admin.'}</div>
+
+      {mode === 'register' && (
+        <Field label="Full name">
+          <input className={inputCls} value={full_name} onChange={e => setFullName(e.target.value)} placeholder="e.g. Kenneth Otieno" />
+        </Field>
+      )}
+      <Field label="Phone number">
+        <input className={inputCls} value={phone} onChange={e => setPhone(e.target.value)} placeholder="+254 7XX XXX XXX" />
+      </Field>
+      {mode === 'register' && (
+        <Field label="Email (optional)">
+          <input className={inputCls} value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+        </Field>
+      )}
+      <Field label={mode === 'login' ? 'PIN' : 'Create a PIN'}>
+        <div className="relative">
+          <input className={inputCls} type={showPin ? 'text' : 'password'} value={pin} onChange={e => setPin(e.target.value)} placeholder="4–6 digits" style={{ paddingRight: 40 }} />
+          <button type="button" onClick={() => setShowPin(s => !s)} style={{ position: 'absolute', right: 10, top: 9 }}>
+            {showPin ? <EyeOff size={16} color="var(--ink-soft)" /> : <Eye size={16} color="var(--ink-soft)" />}
+          </button>
+        </div>
+      </Field>
+      {mode === 'register' && (
+        <Field label="Group invitation code">
+          <input className={inputCls} value={invite_code} onChange={e => setInvite(e.target.value)} placeholder="e.g. KIG-2026" />
+        </Field>
+      )}
+
+      {error && <div className="text-xs font-semibold mb-3" style={{ color: 'var(--brick-deep)' }}>{error}</div>}
+
+      <PrimaryButton onClick={() => mode === 'login' ? onLogin(phone, pin) : onRegister({ full_name, phone, email, pin, invite_code })}>
+        {mode === 'login' ? 'Log In' : 'Register'}
+      </PrimaryButton>
+
+      <button className="text-sm font-semibold text-forest mt-4" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
+        {mode === 'login' ? "New here? Create an account" : 'Already registered? Log in'}
+      </button>
+
+      {mode === 'login' && (
+        <div className="mt-10 pt-5" style={{ borderTop: '1px solid var(--line)' }}>
+          <div className="text-xs font-semibold text-ink-soft mb-2 uppercase tracking-wide">Try the demo</div>
+          <div className="flex gap-2">
+            <button onClick={() => onQuickLogin(demoMember.id)} className="tap flex-1 text-xs font-semibold rounded-xl py-2.5 border border-line bg-card">Continue as Member</button>
+            <button onClick={() => onQuickLogin(demoAdmin.id)} className="tap flex-1 text-xs font-semibold rounded-xl py-2.5 border border-line bg-card">Continue as Admin</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= Member Dashboard ================= */
+function MemberDashboard({ db, user, group, unread, setRoute, setModal, openLoanDetail }) {
+  const savings = eligibleSavings(db, user.id);
+  const eligible = isEligible(db, user);
+  const limit = loanLimitFor(db, user);
+  const loan = activeLoanFor(db, user.id);
+  const week = weeklyStatus(db, user, group);
+  const days = daysBetween(user.joined_at, todayISO());
+
+  let ringPercent, ringLabel, ringSub;
+  if (!eligible) { ringPercent = Math.min(100, (days / 30) * 100); ringLabel = `${Math.min(days, 30)}/30`; ringSub = 'days'; }
+  else if (loan && loan.status === 'Active') { const rep = loanOutstanding(db, loan); const pct = ((loan.approved_amount - rep) / loan.approved_amount) * 100; ringPercent = pct; ringLabel = `${Math.round(pct)}%`; ringSub = 'repaid'; }
+  else { ringPercent = 100; ringLabel = '✓'; ringSub = 'eligible'; }
+
+  return (
+    <div>
+      <DashboardTopBar user={user} unread={unread} onBell={() => setRoute('notifications')} />
+      <div className="px-5 -mt-6 flex flex-col gap-4">
+        <Card>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Total Savings</div>
+              <div className="font-display text-3xl text-ink mt-1">{fmtKSh(savings)}</div>
+              <div className="text-xs text-ink-soft mt-1">Verified contributions to date</div>
+            </div>
+            <RingProgress percent={ringPercent} color={!eligible ? 'var(--gold)' : 'var(--forest)'}>
+              <div className="text-center">
+                <div className="font-display text-sm text-ink">{ringLabel}</div>
+                <div className="text-xs text-ink-soft" style={{ fontSize: 10 }}>{ringSub}</div>
+              </div>
+            </RingProgress>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center gap-3">
+            <IconTile icon={Landmark} tone="gold" />
+            <div className="flex-1">
+              <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Loan Limit</div>
+              <div className="font-display text-2xl text-ink">{eligible ? fmtKSh(limit) : '—'}</div>
+              <div className="text-xs text-ink-soft">Based on your eligible savings</div>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Weekly Contribution</div>
+            <StatusBadge status={week.status} />
+          </div>
+          <div className="flex items-end justify-between mt-1">
+            <div className="font-display text-xl text-ink">{fmtKSh(week.total)} <span className="text-sm text-ink-soft font-body">of {fmtKSh(group.weekly_contribution)}</span></div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2">Active Loan</div>
+          {!loan ? (
+            <div className="text-sm text-ink-soft">No active loan.</div>
+          ) : (
+            <button className="w-full text-left" onClick={() => openLoanDetail(loan.id)}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-display text-xl text-ink">{fmtKSh(loan.status === 'Pending' ? loan.requested_amount : loan.approved_amount)}</div>
+                  <div className="text-xs text-ink-soft mt-0.5">
+                    {loan.status === 'Pending' ? 'Awaiting admin review' : `Balance: ${fmtKSh(loanOutstanding(db, loan))}`}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2"><StatusBadge status={loan.status} /><ChevronRight size={18} color="var(--ink-soft)" /></div>
+              </div>
+            </button>
+          )}
+        </Card>
+
+        <div>
+          <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Quick Actions</div>
+          <div className="grid grid-cols-4 gap-2">
+            <QuickAction icon={PiggyBank} label="Save" onClick={() => setModal({ type: 'addSavings' })} />
+            <QuickAction icon={Landmark} label="Loan" onClick={() => setRoute('loan')} />
+            <QuickAction icon={Wallet} label="Repay" onClick={() => loan ? setModal({ type: 'repay', loan }) : setRoute('loan')} />
+            <QuickAction icon={Receipt} label="Activity" onClick={() => setRoute('transactions')} />
+          </div>
+        </div>
+
+        <Card>
+          <button className="w-full" onClick={() => setRoute('group')}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <IconTile icon={Users} tone="forest" />
+                <div className="text-left">
+                  <div className="font-semibold text-sm text-ink">{group.name}</div>
+                  <div className="text-xs text-ink-soft">{groupMembers(db, group.id).length} members · {fmtKSh(groupSavingsTotal(db, group.id))} saved</div>
+                </div>
+              </div>
+              <ChevronRight size={18} color="var(--ink-soft)" />
+            </div>
+          </button>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function DashboardTopBar({ user, unread, onBell }) {
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  return (
+    <div className="weave-band px-5 pt-6 pb-9 rounded-b-3xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-display text-xl text-paper tracking-tight">IMARA</div>
+          <div className="font-mono text-xs uppercase tracking-widest text-paper" style={{ opacity: 0.7, fontSize: 10 }}>Ken International Groups</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={onBell} className="tap p-2 rounded-full" style={{ background: 'rgba(255,255,255,0.14)', position: 'relative' }}>
+            <Bell size={18} color="#fff" />
+            {unread > 0 && <span className="badge-dot">{unread}</span>}
+          </button>
+          <div className="avatar-gold">{initials(user.full_name)}</div>
+        </div>
+      </div>
+      <div className="mt-5 text-sm text-paper" style={{ opacity: 0.8 }}>{greet},</div>
+      <div className="font-display text-2xl text-paper">{user.full_name.split(' ')[0]}</div>
+    </div>
+  );
+}
+
+function QuickAction({ icon: Icon, label, onClick }) {
+  return (
+    <button onClick={onClick} className="tap flex flex-col items-center gap-1.5 bg-card rounded-2xl py-3 card-shadow">
+      <IconTile icon={Icon} tone="forest" size="sm" />
+      <span className="text-xs font-semibold text-ink">{label}</span>
+    </button>
+  );
+}
+
+/* ================= Savings screen ================= */
+function SavingsScreen({ db, user, group, onBack, setModal }) {
+  const mine = db.savings.filter(s => s.member_id === user.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const total = eligibleSavings(db, user.id);
+  const week = weeklyStatus(db, user, group);
+  const monthTotal = mine.filter(s => s.status === 'Verified' && daysBetween(s.date, todayISO()) <= 30).reduce((s, x) => s + x.amount, 0);
+
+  return (
+    <div>
+      <BackTopBar title="Savings" onBack={onBack} />
+      <div className="px-5 flex flex-col gap-4">
+        <Card className="bg-forest-tint" style={{ border: 'none' }}>
+          <div className="text-xs font-semibold text-forest uppercase tracking-wide">Total Savings</div>
+          <div className="font-display text-3xl text-ink mt-1">{fmtKSh(total)}</div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <div>
+              <div className="text-xs text-ink-soft">This week</div>
+              <div className="font-semibold text-sm text-ink">{fmtKSh(week.total)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-ink-soft">Last 30 days</div>
+              <div className="font-semibold text-sm text-ink">{fmtKSh(monthTotal)}</div>
+            </div>
+          </div>
+        </Card>
+
+        <PrimaryButton onClick={() => setModal({ type: 'addSavings' })}>+ Add Savings</PrimaryButton>
+
+        <div>
+          <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Contribution History</div>
+          <div className="flex flex-col gap-2">
+            {mine.length === 0 && <EmptyState icon={PiggyBank} title="No contributions yet" note="Add your first saving to get started." />}
+            {mine.map(s => (
+              <Card key={s.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                <div>
+                  <div className="font-semibold text-sm text-ink">{fmtKSh(s.amount)}</div>
+                  <div className="text-xs text-ink-soft font-mono mt-0.5">{s.reference} · {fmtDateShort(s.date)}</div>
+                </div>
+                <StatusBadge status={s.status} />
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddSavingsSheet({ group, onClose, onSubmit }) {
+  const [amount, setAmount] = useState(String(group.weekly_contribution));
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState('');
+  return (
+    <Sheet title="Add Savings" onClose={onClose}>
+      <Field label="Amount (KSh)">
+        <input className={inputCls} type="number" value={amount} onChange={e => setAmount(e.target.value)} />
+      </Field>
+      <Field label="Date">
+        <input className={inputCls} type="date" value={date} onChange={e => setDate(e.target.value)} />
+      </Field>
+      <Field label="Note (optional)">
+        <input className={inputCls} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. M-Pesa till payment" />
+      </Field>
+      <div className="text-xs text-ink-soft mb-4">Your contribution will show as <strong>Pending</strong> until your group admin verifies it.</div>
+      <PrimaryButton onClick={() => onSubmit({ amount, date: new Date(date).toISOString(), note })}>Submit Savings</PrimaryButton>
+    </Sheet>
+  );
+}
+
+/* ================= Loan screen (member) ================= */
+function LoanScreen({ db, user, onBack, setModal, openLoanDetail }) {
+  const eligible = isEligible(db, user);
+  const limit = loanLimitFor(db, user);
+  const savings = eligibleSavings(db, user.id);
+  const current = activeLoanFor(db, user.id);
+  const history = db.loans.filter(l => l.member_id === user.id).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return (
+    <div>
+      <BackTopBar title="Loan" onBack={onBack} />
+      <div className="px-5 flex flex-col gap-4">
+        <Card style={{ background: eligible ? 'var(--forest-tint)' : 'var(--gold-tint)', border: 'none' }}>
+          <div className="flex items-center gap-2">
+            {eligible ? <CircleCheck size={18} color="var(--forest)" /> : <CircleAlert size={18} color="var(--gold-deep)" />}
+            <div className="font-semibold text-sm" style={{ color: eligible ? 'var(--forest)' : 'var(--gold-deep)' }}>{eligible ? 'Eligible' : 'Not yet eligible'}</div>
+          </div>
+          {!eligible && <div className="text-xs mt-1.5" style={{ color: 'var(--ink)' }}>{eligibilityReason(db, user)}</div>}
+        </Card>
+
+        {eligible && !current && (
+          <Card>
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Available Loan Limit</div>
+            <div className="font-display text-3xl text-ink mt-1">{fmtKSh(limit)}</div>
+            <div className="mt-3 pt-3 flex flex-col gap-1.5 text-sm" style={{ borderTop: '1px solid var(--line)' }}>
+              <Row label="Eligible savings" value={fmtKSh(savings)} />
+              <Row label="Loan limit" value="80%" />
+              <Row label="Available loan" value={fmtKSh(limit)} bold />
+            </div>
+            <div className="mt-4"><PrimaryButton onClick={() => setModal({ type: 'applyLoan' })}>Apply for Loan</PrimaryButton></div>
+          </Card>
+        )}
+
+        {current && (
+          <Card>
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2">Your loan</div>
+            <button className="w-full text-left" onClick={() => openLoanDetail(current.id)}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-display text-xl text-ink">{fmtKSh(current.status === 'Pending' ? current.requested_amount : current.approved_amount)}</div>
+                  <div className="text-xs text-ink-soft mt-0.5">{current.purpose}</div>
+                </div>
+                <div className="flex items-center gap-2"><StatusBadge status={current.status} /><ChevronRight size={18} color="var(--ink-soft)" /></div>
+              </div>
+            </button>
+            <div className="text-xs text-ink-soft mt-3">You can apply for a new loan once this one is fully repaid.</div>
+          </Card>
+        )}
+
+        {history.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Loan History</div>
+            <div className="flex flex-col gap-2">
+              {history.map(l => (
+                <Card key={l.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }} >
+                  <button className="flex-1 text-left" onClick={() => openLoanDetail(l.id)}>
+                    <div className="font-semibold text-sm text-ink">{fmtKSh(l.requested_amount)}</div>
+                    <div className="text-xs text-ink-soft mt-0.5">{fmtDateShort(l.created_at)} · {l.purpose}</div>
+                  </button>
+                  <StatusBadge status={l.status} />
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, bold }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-ink-soft">{label}</span>
+      <span className={bold ? 'font-bold text-ink' : 'text-ink'}>{value}</span>
+    </div>
+  );
+}
+
+function ApplyLoanSheet({ db, user, onClose, onSubmit }) {
+  const limit = loanLimitFor(db, user);
+  const [amount, setAmount] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [period, setPeriod] = useState('3');
+  const [note, setNote] = useState('');
+  const over = Number(amount) > limit;
+  return (
+    <Sheet title="Apply for Loan" onClose={onClose}>
+      <div className="text-xs text-ink-soft mb-3">Available limit: <strong className="text-forest">{fmtKSh(limit)}</strong></div>
+      <Field label="Requested amount (KSh)">
+        <input className={inputCls} type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder={`Up to ${limit}`} />
+      </Field>
+      {over && <div className="text-xs font-semibold mb-3" style={{ color: 'var(--brick-deep)' }}>Amount exceeds your available loan limit.</div>}
+      <Field label="Purpose">
+        <input className={inputCls} value={purpose} onChange={e => setPurpose(e.target.value)} placeholder="e.g. School fees, stock, emergency" />
+      </Field>
+      <Field label="Repayment period">
+        <select className={inputCls} value={period} onChange={e => setPeriod(e.target.value)}>
+          <option value="1">1 month</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option>
+        </select>
+      </Field>
+      <Field label="Note (optional)">
+        <input className={inputCls} value={note} onChange={e => setNote(e.target.value)} />
+      </Field>
+      <PrimaryButton disabled={over} onClick={() => onSubmit({ requested_amount: amount, purpose, repayment_period: period, note })}>Submit Application</PrimaryButton>
+    </Sheet>
+  );
+}
+
+/* ================= Loan detail ================= */
+function LoanDetailScreen({ db, loan, user, onBack, setModal }) {
+  const outstanding = loanOutstanding(db, loan);
+  const paid = loanRepaid(db, loan.id);
+  const reps = db.repayments.filter(r => r.loan_id === loan.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const pct = loan.approved_amount ? (paid / loan.approved_amount) * 100 : 0;
+  const canRepay = loan.status === 'Active' && user.role === 'member';
+
+  return (
+    <div>
+      <BackTopBar title="Loan Details" onBack={onBack} right={<StatusBadge status={loan.status} />} />
+      <div className="px-5 flex flex-col gap-4">
+        <Card>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Loan Amount</div>
+              <div className="font-display text-2xl text-ink mt-1">{fmtKSh(loan.approved_amount || loan.requested_amount)}</div>
+            </div>
+            {loan.status !== 'Pending' && loan.status !== 'Rejected' && (
+              <RingProgress percent={pct} color="var(--forest)">
+                <div className="text-center"><div className="font-display text-sm text-ink">{Math.round(pct)}%</div><div className="text-ink-soft" style={{ fontSize: 10 }}>repaid</div></div>
+              </RingProgress>
+            )}
+          </div>
+          <div className="mt-3 pt-3 flex flex-col gap-1.5 text-sm" style={{ borderTop: '1px solid var(--line)' }}>
+            <Row label="Purpose" value={loan.purpose} />
+            <Row label="Applied" value={fmtDate(loan.created_at)} />
+            {loan.approved_at && <Row label="Approved" value={fmtDate(loan.approved_at)} />}
+            {loan.due_date && <Row label="Due date" value={fmtDate(loan.due_date)} />}
+            <Row label="Interest / fees" value="None in this MVP" />
+            {loan.status !== 'Pending' && loan.status !== 'Rejected' && <>
+              <Row label="Total payable" value={fmtKSh(loan.approved_amount)} />
+              <Row label="Amount paid" value={fmtKSh(paid)} />
+              <Row label="Outstanding balance" value={fmtKSh(outstanding)} bold />
+            </>}
+          </div>
+          {canRepay && <div className="mt-4"><PrimaryButton onClick={() => setModal({ type: 'repay', loan })}>Record Repayment</PrimaryButton></div>}
+        </Card>
+
+        {reps.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Repayment History</div>
+            <div className="flex flex-col gap-2">
+              {reps.map(r => (
+                <Card key={r.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                  <div>
+                    <div className="font-semibold text-sm text-ink">{fmtKSh(r.amount)}</div>
+                    <div className="text-xs text-ink-soft font-mono mt-0.5">{r.reference} · {fmtDateShort(r.date)}</div>
+                  </div>
+                  <StatusBadge status={r.status} />
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RepaySheet({ db, loan, onClose, onSubmit }) {
+  const outstanding = loanOutstanding(db, loan);
+  const [amount, setAmount] = useState(String(outstanding));
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState('');
+  return (
+    <Sheet title="Record Repayment" onClose={onClose}>
+      <div className="text-xs text-ink-soft mb-3">Outstanding balance: <strong className="text-ink">{fmtKSh(outstanding)}</strong></div>
+      <Field label="Amount (KSh)">
+        <input className={inputCls} type="number" value={amount} onChange={e => setAmount(e.target.value)} />
+      </Field>
+      <Field label="Date">
+        <input className={inputCls} type="date" value={date} onChange={e => setDate(e.target.value)} />
+      </Field>
+      <Field label="Note (optional)">
+        <input className={inputCls} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. M-Pesa reference" />
+      </Field>
+      <div className="text-xs text-ink-soft mb-4">Repayments show as <strong>Pending</strong> until your group admin verifies them.</div>
+      <PrimaryButton onClick={() => onSubmit({ loan_id: loan.id, amount, date: new Date(date).toISOString(), note })}>Submit Repayment</PrimaryButton>
+    </Sheet>
+  );
+}
+
+/* ================= Group screen ================= */
+function GroupScreen({ db, user, group, isAdmin, tab, setTab, onBack, setModal, onVerify, onReject, onApprove, onRejectLoan, openLoanDetail }) {
+  const members = groupMembers(db, group.id);
+  const savingsTotal = groupSavingsTotal(db, group.id);
+  const groupLoans = db.loans.filter(l => l.group_id === group.id);
+  const activeLoans = groupLoans.filter(l => ['Active', 'Approved'].includes(l.status));
+  const totalOutstanding = activeLoans.reduce((s, l) => s + loanOutstanding(db, l), 0);
+  const totalRepaid = db.repayments.filter(r => r.status === 'Verified' && groupLoans.some(l => l.id === r.loan_id)).reduce((s, r) => s + r.amount, 0);
+  const pendingSavings = db.savings.filter(s => s.group_id === group.id && s.status === 'Pending');
+  const pendingReps = db.repayments.filter(r => r.status === 'Pending' && groupLoans.some(l => l.id === r.loan_id));
+  const pendingLoans = groupLoans.filter(l => l.status === 'Pending');
+
+  const tabs = [
+    { key: 'members', label: 'Members' },
+    { key: 'contributions', label: 'Contributions' },
+    { key: 'loans', label: 'Loans' },
+    { key: 'fund', label: 'Fund' },
+  ];
+
+  return (
+    <div>
+      <BackTopBar title={group.name} onBack={onBack} right={isAdmin ? <button onClick={() => setModal({ type: 'addMember' })} className="tap p-2 rounded-full bg-forest"><UserPlus size={16} color="#fff" /></button> : null} />
+      <div className="px-5">
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <StatMini label="Members" value={members.length} />
+          <StatMini label="Group Savings" value={fmtKSh(savingsTotal)} />
+          <StatMini label="Active Loans" value={activeLoans.length} />
+          <StatMini label="Social Fund" value={fmtKSh(group.social_fund_balance)} />
+        </div>
+
+        <div className="flex gap-2 mb-4 overflow-x-auto">
+          {tabs.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)} className="tap text-xs font-semibold rounded-full px-3.5 py-2"
+              style={{ background: tab === t.key ? 'var(--forest)' : 'var(--card)', color: tab === t.key ? '#fff' : 'var(--ink)', border: tab === t.key ? 'none' : '1px solid var(--line)', whiteSpace: 'nowrap' }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'members' && (
+          <div className="flex flex-col gap-2">
+            {members.map(m => {
+              const s = eligibleSavings(db, m.id);
+              const elig = isEligible(db, m);
+              return (
+                <Card key={m.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                  <div className="flex items-center gap-3">
+                    <div className="avatar-neutral">{initials(m.full_name)}</div>
+                    <div>
+                      <div className="font-semibold text-sm text-ink">{m.full_name}{m.id === user.id ? ' (you)' : ''}</div>
+                      <div className="text-xs text-ink-soft">{m.role === 'member' ? 'Member' : m.role === 'admin' ? 'Group Admin' : 'Super Admin'} · {fmtKSh(s)} saved</div>
+                    </div>
+                  </div>
+                  {m.role === 'member' && <StatusBadge status={elig ? 'Verified' : 'Pending'} />}
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === 'contributions' && (
+          <div className="flex flex-col gap-4">
+            {isAdmin && pendingSavings.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide mb-2 px-1" style={{ color: 'var(--gold-deep)' }}>Pending Verification</div>
+                <div className="flex flex-col gap-2">
+                  {pendingSavings.map(s => {
+                    const m = db.users.find(u => u.id === s.member_id);
+                    return (
+                      <Card key={s.id}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-semibold text-sm text-ink">{m.full_name}</div>
+                            <div className="text-xs text-ink-soft font-mono mt-0.5">{fmtKSh(s.amount)} · {s.reference} · {fmtDateShort(s.date)}</div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 mt-3">
+                          <GhostButton full onClick={() => onReject('savings', s.id)}><span style={{ color: 'var(--brick-deep)' }}>Reject</span></GhostButton>
+                          <PrimaryButton onClick={() => onVerify('savings', s.id)}>Verify</PrimaryButton>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div>
+              <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">All Contributions</div>
+              <div className="flex flex-col gap-2">
+                {db.savings.filter(s => s.group_id === group.id).sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 30).map(s => {
+                  const m = db.users.find(u => u.id === s.member_id);
+                  return (
+                    <Card key={s.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                      <div>
+                        <div className="font-semibold text-sm text-ink">{isAdmin ? m.full_name : (m.id === user.id ? 'You' : m.full_name)}</div>
+                        <div className="text-xs text-ink-soft font-mono mt-0.5">{fmtKSh(s.amount)} · {fmtDateShort(s.date)}</div>
+                      </div>
+                      <StatusBadge status={s.status} />
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === 'loans' && (
+          <div className="flex flex-col gap-4">
+            {isAdmin && pendingLoans.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide mb-2 px-1" style={{ color: 'var(--gold-deep)' }}>Pending Applications</div>
+                <div className="flex flex-col gap-2">
+                  {pendingLoans.map(l => {
+                    const m = db.users.find(u => u.id === l.member_id);
+                    return (
+                      <Card key={l.id}>
+                        <div className="font-semibold text-sm text-ink">{m.full_name}</div>
+                        <div className="text-xs text-ink-soft mt-0.5">{l.purpose} · requested {fmtKSh(l.requested_amount)}</div>
+                        <div className="text-xs text-ink-soft">Limit at application: {fmtKSh(l.loan_limit_at_application)}</div>
+                        <div className="flex gap-2 mt-3">
+                          <GhostButton full onClick={() => onRejectLoan(l.id)}><span style={{ color: 'var(--brick-deep)' }}>Reject</span></GhostButton>
+                          <PrimaryButton onClick={() => onApprove(l.id, l.requested_amount)}>Approve</PrimaryButton>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {isAdmin && pendingReps.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide mb-2 px-1" style={{ color: 'var(--gold-deep)' }}>Repayments to Verify</div>
+                <div className="flex flex-col gap-2">
+                  {pendingReps.map(r => {
+                    const m = db.users.find(u => u.id === r.member_id);
+                    return (
+                      <Card key={r.id}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-semibold text-sm text-ink">{m.full_name}</div>
+                            <div className="text-xs text-ink-soft font-mono mt-0.5">{fmtKSh(r.amount)} · {r.reference}</div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 mt-3">
+                          <GhostButton full onClick={() => onReject('repayment', r.id)}><span style={{ color: 'var(--brick-deep)' }}>Reject</span></GhostButton>
+                          <PrimaryButton onClick={() => onVerify('repayment', r.id)}>Verify</PrimaryButton>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div>
+              <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">{isAdmin ? 'All Loans' : 'Group Loan Activity'}</div>
+              <div className="flex flex-col gap-2">
+                {groupLoans.length === 0 && <EmptyState icon={Landmark} title="No loans yet" />}
+                {groupLoans.map(l => {
+                  const m = db.users.find(u => u.id === l.member_id);
+                  return isAdmin ? (
+                    <Card key={l.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                      <button className="flex-1 text-left" onClick={() => openLoanDetail(l.id)}>
+                        <div className="font-semibold text-sm text-ink">{m.full_name}</div>
+                        <div className="text-xs text-ink-soft mt-0.5">{fmtKSh(l.approved_amount || l.requested_amount)} · {fmtDateShort(l.created_at)}</div>
+                      </button>
+                      <StatusBadge status={l.status} />
+                    </Card>
+                  ) : (
+                    <Card key={l.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                      <div className="text-sm text-ink">{l.member_id === user.id ? 'Your loan' : 'Member loan'}</div>
+                      <StatusBadge status={l.status} />
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+            {isAdmin && (
+              <Card className="bg-forest-tint" style={{ border: 'none' }}>
+                <Row label="Total outstanding" value={fmtKSh(totalOutstanding)} bold />
+                <Row label="Total repaid (verified)" value={fmtKSh(totalRepaid)} />
+              </Card>
+            )}
+          </div>
+        )}
+
+        {tab === 'fund' && (
+          <Card>
+            <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide">Social / Security Fund</div>
+            <div className="font-display text-2xl text-ink mt-1">{fmtKSh(group.social_fund_balance)}</div>
+            <div className="text-xs text-ink-soft mt-2">Used for emergencies and group welfare, separate from savings and loan limits. Managed by your group admin.</div>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatMini({ label, value }) {
+  return (
+    <Card>
+      <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide" style={{ fontSize: 10 }}>{label}</div>
+      <div className="font-display text-lg text-ink mt-0.5">{value}</div>
+    </Card>
+  );
+}
+
+function AddMemberSheet({ group, onClose, onSubmit }) {
+  const [full_name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [pin, setPin] = useState('1234');
+  return (
+    <Sheet title="Add Member" onClose={onClose}>
+      <div className="text-xs text-ink-soft mb-3">Invitation code: <strong className="font-mono">{group.invite_code}</strong></div>
+      <Field label="Full name">
+        <input className={inputCls} value={full_name} onChange={e => setName(e.target.value)} />
+      </Field>
+      <Field label="Phone number">
+        <input className={inputCls} value={phone} onChange={e => setPhone(e.target.value)} placeholder="+254 7XX XXX XXX" />
+      </Field>
+      <Field label="Starting PIN">
+        <input className={inputCls} value={pin} onChange={e => setPin(e.target.value)} />
+      </Field>
+      <PrimaryButton onClick={() => onSubmit({ full_name, phone, pin })}>Add Member</PrimaryButton>
+    </Sheet>
+  );
+}
+
+/* ================= Transactions ================= */
+function TransactionsScreen({ db, user, isAdmin, onBack, filter, setFilter }) {
+  const all = deriveTransactions(db, isAdmin ? { groupId: user.group_id } : { memberId: user.id });
+  const filters = ['All', 'Savings', 'Loan', 'Repayment'];
+  const list = filter === 'All' ? all : all.filter(t => t.type === filter);
+  return (
+    <div>
+      <BackTopBar title={isAdmin ? 'Group Activity' : 'Transactions'} onBack={onBack} />
+      <div className="px-5">
+        <div className="flex gap-2 mb-4 overflow-x-auto">
+          {filters.map(f => (
+            <button key={f} onClick={() => setFilter(f)} className="tap text-xs font-semibold rounded-full px-3.5 py-2"
+              style={{ background: filter === f ? 'var(--forest)' : 'var(--card)', color: filter === f ? '#fff' : 'var(--ink)', border: filter === f ? 'none' : '1px solid var(--line)', whiteSpace: 'nowrap' }}>
+              {f === 'Loan' ? 'Loans' : f === 'Repayment' ? 'Repayments' : f}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-col gap-2">
+          {list.length === 0 && <EmptyState icon={Receipt} title="No transactions" note="Nothing to show for this filter yet." />}
+          {list.map(t => {
+            const m = isAdmin ? db.users.find(u => u.id === t.member_id) : null;
+            return (
+              <Card key={t.id} className="flex items-center justify-between" style={{ flexDirection: 'row' }}>
+                <div className="flex items-center gap-3">
+                  <div className={t.direction === 'in' ? 'icon-tile icon-tile-forest' : 'icon-tile icon-tile-gold'}>
+                    {t.direction === 'in' ? <ArrowDownRight size={16} /> : <ArrowUpRight size={16} />}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-sm text-ink">{t.type}{m ? ` · ${m.full_name.split(' ')[0]}` : ''}</div>
+                    <div className="text-xs text-ink-soft font-mono mt-0.5">{t.reference} · {fmtDateShort(t.date)}</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-semibold text-sm text-ink">{t.direction === 'out' ? '−' : '+'}{fmtKSh(t.amount)}</div>
+                  <StatusBadge status={t.status} />
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= Profile ================= */
+function ProfileScreen({ db, user, group, onBack, setModal, onLogout }) {
+  const roleLabel = user.role === 'member' ? 'Member' : user.role === 'admin' ? 'Group Admin' : 'Super Admin';
+  return (
+    <div>
+      <BackTopBar title="Profile" onBack={onBack} />
+      <div className="px-5 flex flex-col gap-4">
+        <Card className="flex items-center gap-4" style={{ flexDirection: 'row' }}>
+          <div className="avatar-gold" style={{ width: 56, height: 56, fontSize: 18 }}>{initials(user.full_name)}</div>
+          <div>
+            <div className="font-display text-lg text-ink">{user.full_name}</div>
+            <div className="text-xs text-ink-soft">{roleLabel} · {user.member_no}</div>
+          </div>
+        </Card>
+
+        <Card className="flex flex-col gap-3">
+          <InfoRow icon={Phone} label="Phone" value={user.phone} />
+          <InfoRow icon={Mail} label="Email" value={user.email || 'Not provided'} />
+          <InfoRow icon={Building2} label="Group" value={group.name} />
+          <InfoRow icon={Calendar} label="Member since" value={fmtDate(user.joined_at)} />
+        </Card>
+
+        <div>
+          <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Settings</div>
+          <Card className="p-0" style={{ overflow: 'hidden' }}>
+            <SettingsRow icon={KeyRound} label="Change PIN" onClick={() => setModal({ type: 'changePin' })} />
+            <SettingsRow icon={Bell} label="Notifications" onClick={() => {}} />
+            <SettingsRow icon={ShieldCheck} label="Privacy" onClick={() => {}} />
+            <SettingsRow icon={LogOut} label="Logout" onClick={onLogout} danger last />
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+function InfoRow({ icon: Icon, label, value }) {
+  return (
+    <div className="flex items-center gap-3">
+      <Icon size={16} color="var(--ink-soft)" />
+      <div className="flex-1 flex items-center justify-between">
+        <span className="text-xs text-ink-soft">{label}</span>
+        <span className="text-sm font-semibold text-ink">{value}</span>
+      </div>
+    </div>
+  );
+}
+function SettingsRow({ icon: Icon, label, onClick, danger, last }) {
+  return (
+    <button onClick={onClick} className="tap w-full flex items-center justify-between px-4 py-3.5" style={{ borderBottom: last ? 'none' : '1px solid var(--line)' }}>
+      <div className="flex items-center gap-3">
+        <Icon size={17} color={danger ? 'var(--brick-deep)' : 'var(--ink-soft)'} />
+        <span className="text-sm font-semibold" style={{ color: danger ? 'var(--brick-deep)' : 'var(--ink)' }}>{label}</span>
+      </div>
+      {!danger && <ChevronRight size={16} color="var(--ink-soft)" />}
+    </button>
+  );
+}
+function ChangePinSheet({ onClose, onSubmit }) {
+  const [pin, setPin] = useState('');
+  return (
+    <Sheet title="Change PIN" onClose={onClose}>
+      <Field label="New PIN">
+        <input className={inputCls} value={pin} onChange={e => setPin(e.target.value)} placeholder="4–6 digits" />
+      </Field>
+      <PrimaryButton onClick={() => onSubmit(pin)}>Update PIN</PrimaryButton>
+    </Sheet>
+  );
+}
+
+/* ================= Notifications ================= */
+function NotificationsScreen({ db, user, onBack, onMarkAllRead, onMarkRead }) {
+  const mine = db.notifications.filter(n => n.user_id === user.id).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  return (
+    <div>
+      <BackTopBar title="Notifications" onBack={onBack} right={mine.some(n => !n.read) ? <button onClick={onMarkAllRead} className="text-xs font-semibold text-forest">Mark all read</button> : null} />
+      <div className="px-5 flex flex-col gap-2">
+        {mine.length === 0 && <EmptyState icon={Bell} title="No notifications yet" />}
+        {mine.map(n => (
+          <button key={n.id} onClick={() => onMarkRead(n.id)} className="tap w-full text-left">
+            <Card style={{ background: n.read ? 'var(--card)' : 'var(--forest-tint)', border: 'none' }}>
+              <div className="flex items-start gap-3">
+                <div className="icon-tile icon-tile-forest" style={{ flexShrink: 0 }}><Bell size={15} /></div>
+                <div className="flex-1">
+                  <div className="font-semibold text-sm text-ink">{n.title}</div>
+                  <div className="text-xs text-ink-soft mt-0.5">{n.message}</div>
+                  <div className="text-xs text-ink-soft font-mono mt-1" style={{ opacity: 0.7 }}>{fmtDateShort(n.created_at)}</div>
+                </div>
+                {!n.read && <div style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--gold)', marginTop: 4, flexShrink: 0 }} />}
+              </div>
+            </Card>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ================= Admin Dashboard ================= */
+function AdminDashboard({ db, user, group, nav, setModal, setRoute, setGroupTab }) {
+  const members = groupMembers(db, group.id).filter(u => u.role === 'member');
+  const savingsTotal = groupSavingsTotal(db, group.id);
+  const groupLoans = db.loans.filter(l => l.group_id === group.id);
+  const activeLoans = groupLoans.filter(l => ['Active', 'Approved'].includes(l.status));
+  const totalOutstanding = activeLoans.reduce((s, l) => s + loanOutstanding(db, l), 0);
+  const totalRepaid = db.repayments.filter(r => r.status === 'Verified' && groupLoans.some(l => l.id === r.loan_id)).reduce((s, r) => s + r.amount, 0);
+  const pendingLoans = groupLoans.filter(l => l.status === 'Pending').length;
+  const pendingVerifications = db.savings.filter(s => s.group_id === group.id && s.status === 'Pending').length +
+    db.repayments.filter(r => r.status === 'Pending' && groupLoans.some(l => l.id === r.loan_id)).length;
+  const unread = db.notifications.filter(n => n.user_id === user.id && !n.read).length;
+
+  const goGroup = (tab) => { setGroupTab(tab); setRoute('group'); };
+
+  return (
+    <div>
+      <DashboardTopBar user={user} unread={unread} onBell={() => setRoute('notifications')} />
+      <div className="px-5 -mt-6 flex flex-col gap-4">
+        {user.role === 'super_admin' && (
+          <Card className="bg-forest-deep" style={{ border: 'none' }}>
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--gold)' }}>Platform Overview</div>
+            <div className="flex gap-5 mt-2">
+              <div><div className="font-display text-xl text-paper">1</div><div className="text-xs text-paper" style={{ opacity: 0.75 }}>Group</div></div>
+              <div><div className="font-display text-xl text-paper">{db.users.length}</div><div className="text-xs text-paper" style={{ opacity: 0.75 }}>Users</div></div>
+            </div>
+          </Card>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <StatMini label="Total Members" value={members.length} />
+          <StatMini label="Group Savings" value={fmtKSh(savingsTotal)} />
+          <StatMini label="Active Loans" value={activeLoans.length} />
+          <StatMini label="Outstanding" value={fmtKSh(totalOutstanding)} />
+          <StatMini label="Total Repaid" value={fmtKSh(totalRepaid)} />
+          <StatMini label="Social Fund" value={fmtKSh(group.social_fund_balance)} />
+        </div>
+
+        {(pendingLoans > 0 || pendingVerifications > 0) && (
+          <Card style={{ background: 'var(--gold-tint)', border: 'none' }}>
+            <div className="flex items-center gap-2 mb-1"><CircleAlert size={16} color="var(--gold-deep)" /><span className="font-semibold text-sm" style={{ color: 'var(--gold-deep)' }}>Needs your attention</span></div>
+            <div className="text-xs text-ink">
+              {pendingLoans > 0 && <div>{pendingLoans} loan application{pendingLoans === 1 ? '' : 's'} awaiting review</div>}
+              {pendingVerifications > 0 && <div>{pendingVerifications} contribution{pendingVerifications === 1 ? '' : 's'}/repayment{pendingVerifications === 1 ? '' : 's'} to verify</div>}
+            </div>
+          </Card>
+        )}
+
+        <div>
+          <div className="text-xs font-semibold text-ink-soft uppercase tracking-wide mb-2 px-1">Quick Actions</div>
+          <div className="grid grid-cols-4 gap-2">
+            <QuickAction icon={UserPlus} label="Add Member" onClick={() => setModal({ type: 'addMember' })} />
+            <QuickAction icon={ClipboardCheck} label="Verify" onClick={() => goGroup('contributions')} />
+            <QuickAction icon={Landmark} label="Review Loans" onClick={() => goGroup('loans')} />
+            <QuickAction icon={Users} label="Manage Group" onClick={() => goGroup('members')} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= Admin loans (nav tab) ================= */
+function AdminLoansScreen({ db, onBack, onApprove, onReject, openLoanDetail }) {
+  const [sub, setSub] = useState('pending');
+  const loans = db.loans.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const pending = loans.filter(l => l.status === 'Pending');
+  const others = loans.filter(l => l.status !== 'Pending');
+  const list = sub === 'pending' ? pending : others;
+  return (
+    <div>
+      <BackTopBar title="Loans" onBack={onBack} />
+      <div className="px-5">
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => setSub('pending')} className="tap text-xs font-semibold rounded-full px-3.5 py-2" style={{ background: sub === 'pending' ? 'var(--forest)' : 'var(--card)', color: sub === 'pending' ? '#fff' : 'var(--ink)', border: sub === 'pending' ? 'none' : '1px solid var(--line)' }}>Pending ({pending.length})</button>
+          <button onClick={() => setSub('all')} className="tap text-xs font-semibold rounded-full px-3.5 py-2" style={{ background: sub === 'all' ? 'var(--forest)' : 'var(--card)', color: sub === 'all' ? '#fff' : 'var(--ink)', border: sub === 'all' ? 'none' : '1px solid var(--line)' }}>History</button>
+        </div>
+        <div className="flex flex-col gap-2">
+          {list.length === 0 && <EmptyState icon={Landmark} title={sub === 'pending' ? 'No pending applications' : 'No loan history yet'} />}
+          {list.map(l => {
+            const m = db.users.find(u => u.id === l.member_id);
+            return (
+              <Card key={l.id}>
+                <button className="w-full text-left" onClick={() => openLoanDetail(l.id)}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-sm text-ink">{m.full_name}</div>
+                      <div className="text-xs text-ink-soft mt-0.5">{l.purpose} · {fmtDateShort(l.created_at)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-semibold text-sm text-ink">{fmtKSh(l.requested_amount)}</div>
+                      <StatusBadge status={l.status} />
+                    </div>
+                  </div>
+                </button>
+                {l.status === 'Pending' && (
+                  <div className="flex gap-2 mt-3">
+                    <GhostButton full onClick={() => onReject(l.id)}><span style={{ color: 'var(--brick-deep)' }}>Reject</span></GhostButton>
+                    <PrimaryButton onClick={() => onApprove(l.id, l.requested_amount)}>Approve</PrimaryButton>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= styles ================= */
+function BrandStyles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap');
+      :root {
+        --ink: #16241D; --ink-soft: #5B6B60;
+        --forest: #1F5C3F; --forest-deep: #123B28; --forest-tint: #E6EFE8;
+        --gold: #C99A3B; --gold-deep: #8C6A1F; --gold-tint: #F6ECD6;
+        --paper: #F3F5EF; --card: #FFFFFF; --line: #E3E1D6;
+        --brick: #B0473A; --brick-deep: #8C332A; --brick-tint: #F6E4E1;
+      }
+      * { box-sizing: border-box; }
+      .font-display { font-family: 'Fraunces', serif; }
+      .font-body, body { font-family: 'Manrope', sans-serif; }
+      .font-mono { font-family: 'IBM Plex Mono', monospace; }
+      .bg-paper { background: var(--paper); } .bg-card { background: var(--card); }
+      .bg-forest { background: var(--forest); } .bg-forest-deep { background: var(--forest-deep); } .bg-forest-tint { background: var(--forest-tint); }
+      .text-ink { color: var(--ink); } .text-ink-soft { color: var(--ink-soft); }
+      .text-forest { color: var(--forest); } .text-paper { color: var(--paper); }
+      .border-line { border-color: var(--line); }
+      .card-shadow { box-shadow: 0 1px 2px rgba(22,36,29,0.05), 0 10px 28px -16px rgba(22,36,29,0.22); border: 1px solid var(--line); }
+      .weave-band { background-color: var(--forest-deep); background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.07) 0px, rgba(255,255,255,0.07) 2px, transparent 2px, transparent 13px); }
+      .tap { transition: transform .15s ease, opacity .15s ease; cursor: pointer; }
+      .tap:active { transform: scale(0.97); opacity: 0.92; }
+      .sheet-enter { animation: sheet-in .28s cubic-bezier(.22,1,.36,1); }
+      @keyframes sheet-in { from { transform: translateY(16px); opacity: 0 } to { transform: translateY(0); opacity: 1 } }
+      .fade-in { animation: fade-in .4s ease both; }
+      @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+      .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; font-family: 'Manrope', sans-serif; white-space: nowrap; }
+      .chip-forest { background: var(--forest-tint); color: var(--forest); }
+      .chip-forest-solid { background: var(--forest); color: #fff; }
+      .chip-gold { background: var(--gold-tint); color: var(--gold-deep); }
+      .chip-brick { background: var(--brick-tint); color: var(--brick-deep); }
+      .chip-neutral { background: var(--line); color: var(--ink-soft); }
+      .icon-tile { width: 38px; height: 38px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+      .icon-tile-forest { background: var(--forest-tint); color: var(--forest); }
+      .icon-tile-gold { background: var(--gold-tint); color: var(--gold-deep); }
+      .icon-tile-neutral { background: var(--line); color: var(--ink-soft); }
+      .avatar-gold { width: 36px; height: 36px; border-radius: 999px; background: var(--gold); color: var(--forest-deep); font-weight: 800; display: flex; align-items: center; justify-content: center; font-size: 13px; font-family: 'Manrope', sans-serif; }
+      .avatar-neutral { width: 36px; height: 36px; border-radius: 999px; background: var(--forest-tint); color: var(--forest); font-weight: 800; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+      .badge-dot { position: absolute; top: -3px; right: -3px; background: var(--gold); color: var(--forest-deep); font-size: 10px; font-weight: 800; width: 16px; height: 16px; border-radius: 999px; display: flex; align-items: center; justify-content: center; }
+      input, select { font-family: 'Manrope', sans-serif; }
+      input:focus, select:focus { border-color: var(--forest); }
+    `}</style>
+  );
+}
